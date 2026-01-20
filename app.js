@@ -1,16 +1,6 @@
 class StudyTracker {
     constructor() {
-        this.data = this.loadData();
-        this.timerInterval = null;
-        this.startTime = null;
-        this.countdownInterval = null;
-        this.examDate = new Date('2026-09-05T08:30:00');
-        this.init();
-    }
-
-    loadData() {
-        const saved = localStorage.getItem('studyTrackerData');
-        return saved ? JSON.parse(saved) : {
+        this.data = {
             records: [],
             totalDays: 0,
             totalHours: 0,
@@ -21,20 +11,145 @@ class StudyTracker {
                 jingjifa: 0
             }
         };
+        this.timerInterval = null;
+        this.startTime = null;
+        this.countdownInterval = null;
+        this.examDate = new Date('2026-09-05T08:30:00');
+        this.currentUser = null;
+        this.unsubscribe = null;
+        this.init();
     }
 
-    saveData() {
-        localStorage.setItem('studyTrackerData', JSON.stringify(this.data));
-    }
-
-    init() {
-        this.updateDisplay();
+    async init() {
+        this.setupAuthListener();
         this.setupEventListeners();
-        this.renderCalendar();
-        this.renderHistory();
-        this.checkTodayStatus();
         this.updateCurrentDate();
         this.startCountdown();
+    }
+
+    setupAuthListener() {
+        auth.onAuthStateChanged((user) => {
+            if (user) {
+                this.currentUser = user;
+                document.getElementById('loginModal').style.display = 'none';
+                document.getElementById('mainContent').style.display = 'block';
+                document.getElementById('currentUser').textContent = `👤 ${user.email}`;
+                this.loadData();
+            } else {
+                this.currentUser = null;
+                document.getElementById('loginModal').style.display = 'flex';
+                document.getElementById('mainContent').style.display = 'none';
+                if (this.unsubscribe) {
+                    this.unsubscribe();
+                }
+            }
+        });
+    }
+
+    async loadData() {
+        if (!this.currentUser) return;
+
+        try {
+            const docRef = db.collection('users').doc(this.currentUser.uid);
+            
+            this.unsubscribe = docRef.onSnapshot((doc) => {
+                if (doc.exists) {
+                    this.data = doc.data();
+                    this.updateDisplay();
+                    this.renderCalendar();
+                    this.renderHistory();
+                    this.checkTodayStatus();
+                } else {
+                    this.saveData();
+                }
+            });
+        } catch (error) {
+            console.error('加载数据失败:', error);
+        }
+    }
+
+    async saveData() {
+        if (!this.currentUser) return;
+
+        try {
+            await db.collection('users').doc(this.currentUser.uid).set(this.data);
+        } catch (error) {
+            console.error('保存数据失败:', error);
+            alert('保存数据失败，请检查网络连接');
+        }
+    }
+
+    async login() {
+        const email = document.getElementById('username').value;
+        const password = document.getElementById('password').value;
+        const errorDiv = document.getElementById('loginError');
+
+        if (!email || !password) {
+            errorDiv.textContent = '请输入用户名和密码';
+            errorDiv.style.display = 'block';
+            return;
+        }
+
+        try {
+            await auth.signInWithEmailAndPassword(email, password);
+            errorDiv.style.display = 'none';
+            document.getElementById('username').value = '';
+            document.getElementById('password').value = '';
+        } catch (error) {
+            errorDiv.textContent = '登录失败：' + this.getErrorMessage(error.code);
+            errorDiv.style.display = 'block';
+        }
+    }
+
+    async register() {
+        const email = document.getElementById('username').value;
+        const password = document.getElementById('password').value;
+        const errorDiv = document.getElementById('loginError');
+
+        if (!email || !password) {
+            errorDiv.textContent = '请输入用户名和密码';
+            errorDiv.style.display = 'block';
+            return;
+        }
+
+        if (password.length < 6) {
+            errorDiv.textContent = '密码至少需要6个字符';
+            errorDiv.style.display = 'block';
+            return;
+        }
+
+        try {
+            await auth.createUserWithEmailAndPassword(email, password);
+            errorDiv.style.display = 'none';
+            document.getElementById('username').value = '';
+            document.getElementById('password').value = '';
+        } catch (error) {
+            errorDiv.textContent = '注册失败：' + this.getErrorMessage(error.code);
+            errorDiv.style.display = 'block';
+        }
+    }
+
+    async logout() {
+        try {
+            await auth.signOut();
+            if (this.unsubscribe) {
+                this.unsubscribe();
+            }
+        } catch (error) {
+            console.error('登出失败:', error);
+        }
+    }
+
+    getErrorMessage(code) {
+        const errorMessages = {
+            'auth/user-not-found': '用户不存在',
+            'auth/wrong-password': '密码错误',
+            'auth/email-already-in-use': '该邮箱已被注册',
+            'auth/weak-password': '密码强度不够',
+            'auth/invalid-email': '邮箱格式不正确',
+            'auth/invalid-credential': '用户名或密码错误'
+        };
+        return errorMessages[code] || '未知错误';
     }
 
     startCountdown() {
@@ -123,7 +238,7 @@ class StudyTracker {
         this.startTime = null;
     }
 
-    saveCheckin(minutes) {
+    async saveCheckin(minutes) {
         const today = new Date().toDateString();
         const existingRecord = this.data.records.find(r => r.date === today);
         
@@ -146,7 +261,7 @@ class StudyTracker {
         }
         
         this.data.totalHours += minutes / 60;
-        this.saveData();
+        await this.saveData();
         this.updateDisplay();
         this.renderCalendar();
         this.renderHistory();
@@ -155,7 +270,7 @@ class StudyTracker {
         alert(`打卡成功！本次学习 ${minutes} 分钟`);
     }
 
-    saveSubjectProgress() {
+    async saveSubjectProgress() {
         const today = new Date().toDateString();
         const record = this.data.records.find(r => r.date === today);
         
@@ -179,7 +294,7 @@ class StudyTracker {
         this.data.subjectProgress.caiguan = Math.min(100, this.data.subjectProgress.caiguan + caiguanTime / 10);
         this.data.subjectProgress.jingjifa = Math.min(100, this.data.subjectProgress.jingjifa + jingjifaTime / 10);
         
-        this.saveData();
+        await this.saveData();
         this.updateDisplay();
         this.renderHistory();
         
@@ -304,34 +419,43 @@ class StudyTracker {
         historyList.innerHTML = html;
     }
 
-    clearAllData() {
-        if (confirm('确定要清空所有学习记录吗？此操作不可恢复！')) {
-            localStorage.removeItem('studyTrackerData');
-            this.data = {
-                records: [],
-                totalDays: 0,
-                totalHours: 0,
-                currentStreak: 0,
-                subjectProgress: {
-                    shiwu: 0,
-                    caiguan: 0,
-                    jingjifa: 0
-                }
-            };
-            this.saveData();
-            this.updateDisplay();
-            this.renderCalendar();
-            this.renderHistory();
-            this.checkTodayStatus();
-            alert('所有记录已清空！');
-        }
+    async clearAllData() {
+        if (!confirm('确定要清空所有学习记录吗？此操作不可恢复！')) return;
+        
+        this.data = {
+            records: [],
+            totalDays: 0,
+            totalHours: 0,
+            currentStreak: 0,
+            subjectProgress: {
+                shiwu: 0,
+                caiguan: 0,
+                jingjifa: 0
+            }
+        };
+        
+        await this.saveData();
+        this.updateDisplay();
+        this.renderCalendar();
+        this.renderHistory();
+        this.checkTodayStatus();
+        alert('所有记录已清空！');
     }
 
     setupEventListeners() {
+        document.getElementById('loginBtn').addEventListener('click', () => this.login());
+        document.getElementById('registerBtn').addEventListener('click', () => this.register());
+        document.getElementById('logoutBtn').addEventListener('click', () => this.logout());
         document.getElementById('checkinBtn').addEventListener('click', () => this.startTimer());
         document.getElementById('stopBtn').addEventListener('click', () => this.stopTimer());
         document.getElementById('saveBtn').addEventListener('click', () => this.saveSubjectProgress());
         document.getElementById('clearBtn').addEventListener('click', () => this.clearAllData());
+        
+        document.getElementById('password').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                this.login();
+            }
+        });
     }
 }
 
